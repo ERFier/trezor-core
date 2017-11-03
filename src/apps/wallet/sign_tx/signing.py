@@ -205,7 +205,7 @@ async def sign_tx(tx: SignTx, root):
             write_varint(w_txo_bin, tx.outputs_count)
         write_tx_output(w_txo_bin, txo_bin)
 
-        tx_ser.signature_index = None  # @todo delete?
+        tx_ser.signature_index = None
         tx_ser.signature = None
         tx_ser.serialized_tx = w_txo_bin
 
@@ -299,6 +299,14 @@ def get_p2wpkh_witness(signature: bytes, pubkey: bytes):
 
 
 def output_derive_script(o: TxOutputType, coin: CoinType, root) -> bytes:
+
+    # if PAYTOADDRESS check address prefix todo could be better?
+    if o.script_type == OutputScriptType.PAYTOADDRESS and o.address:
+        raw = base58.decode_check(o.address)
+        coin_type, address = address_type.split(coin, raw)
+        if int.from_bytes(coin_type, 'little') == coin.address_type_p2sh:
+            o.script_type = OutputScriptType.PAYTOSCRIPTHASH
+
     if o.script_type == OutputScriptType.PAYTOADDRESS:
         ra = output_paytoaddress_extract_raw_address(o, coin, root)
         ra = address_type.strip(coin.address_type, ra)
@@ -323,7 +331,6 @@ def output_derive_script(o: TxOutputType, coin: CoinType, root) -> bytes:
 
 def output_paytoaddress_extract_raw_address(
         o: TxOutputType, coin: CoinType, root, p2sh: bool=False) -> bytes:
-    # todo if segwit then addr_type = p2sh ?
     addr_type = coin.address_type_p2sh if p2sh else coin.address_type
     # TODO: dont encode/decode more then necessary
     if o.address_n is not None:
