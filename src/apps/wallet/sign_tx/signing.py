@@ -394,6 +394,22 @@ def ecdsa_sign(node, digest: bytes) -> bytes:
     return sigder
 
 
+def get_p2wpkh_in_p2sh_address(pubkey: bytes, coin: CoinType) -> str:
+    pubkeyhash = ecdsa_hash_pubkey(pubkey)
+    s = bytearray(22)
+    s[0] = 0x00  # OP_0
+    s[1] = 0x14  # pushing 20 bytes
+    s[2:22] = pubkeyhash
+    h = sha256(s).digest()
+    h = ripemd160(h).digest()
+
+    s = bytearray(21)  # todo better?
+    s[0] = coin.address_type_p2sh
+    s[1:21] = h
+
+    return base58.encode_check(bytes(s))
+
+
 # TX Scripts
 # ===
 
