@@ -216,8 +216,6 @@ async def sign_tx(tx: SignTx, root):
             # STAGE_REQUEST_SEGWIT_WITNESS
             txi = await request_tx_input(tx_req, i)
             # todo check amount?
-            # if hashType != ANYONE_CAN_PAY ? todo
-            # todo: what to do with other types?
             key_sign = node_derive(root, txi.address_n)
             key_sign_pub = key_sign.public_key()
             bip143_hash = bip143.preimage_hash(tx, txi, ecdsa_hash_pubkey(key_sign_pub))
