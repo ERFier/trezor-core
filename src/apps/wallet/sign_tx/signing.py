@@ -317,6 +317,13 @@ def output_derive_script(o: TxOutputType, coin: CoinType, root) -> bytes:
         ra = address_type.strip(coin.address_type_p2sh, ra)
         return script_paytoscripthash_new(ra)
 
+    elif o.script_type == OutputScriptType.PAYTOP2SHWITNESS:  # todo ok? check if change?
+        node = node_derive(root, o.address_n)
+        address = get_p2wpkh_in_p2sh_address(node.public_key(), coin)
+        ra = base58.decode_check(address)
+        ra = address_type.strip(coin.address_type_p2sh, ra)
+        return script_paytoscripthash_new(ra)
+
     elif o.script_type == OutputScriptType.PAYTOOPRETURN:
         if o.amount == 0:
             return script_paytoopreturn_new(o.op_return_data)
