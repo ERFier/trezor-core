@@ -1,6 +1,6 @@
 from trezor.crypto.hashlib import sha256, ripemd160
 from trezor.crypto.curve import secp256k1
-from trezor.crypto import base58, der
+from trezor.crypto import base58, der, bech32
 from trezor.utils import ensure
 
 from trezor.messages.TxRequestSerializedType import TxRequestSerializedType
@@ -51,7 +51,7 @@ async def check_tx_fee(tx: SignTx, root):
         # STAGE_REQUEST_1_INPUT
         txi = await request_tx_input(tx_req, i)
         write_tx_input_check(h_first, txi)
-        if txi.script_type == InputScriptType.SPENDP2SHWITNESS:
+        if txi.script_type in (InputScriptType.SPENDP2SHWITNESS, InputScriptType.SPENDWITNESS):
             segwit[i] = True
             # Add I to segwit hash_prevouts, hash_sequence
             bip143.add_prevouts(txi)
@@ -129,7 +129,7 @@ async def sign_tx(tx: SignTx, root):
         if segwit[i_sign]:
             # STAGE_REQUEST_SEGWIT_INPUT
             txi_sign = await request_tx_input(tx_req, i_sign)
-            if txi_sign.script_type == InputScriptType.SPENDP2SHWITNESS:
+            if txi_sign.script_type in (InputScriptType.SPENDP2SHWITNESS, InputScriptType.SPENDWITNESS):
                 key_sign = node_derive(root, txi_sign.address_n)
                 key_sign_pub = key_sign.public_key()
                 txi_sign.script_sig = input_derive_script(txi_sign, key_sign_pub)
@@ -301,15 +301,28 @@ def get_p2wpkh_witness(signature: bytes, pubkey: bytes):
 # TX Outputs
 # ===
 
+def output_derive_script_bech(o: TxOutputType, coin: CoinType, root) -> bytes:
+
+    if o.script_type == OutputScriptType.PAYTOADDRESS:
+        raw = decode_segwit_address(coin.bech32_prefix, o.address)
+        return output_script_native_p2wpkh(raw)
+    else:
+        raise SigningError(FailureType.SyntaxError,
+                           'Invalid output script type')
+
 
 def output_derive_script(o: TxOutputType, coin: CoinType, root) -> bytes:
 
-    # if PAYTOADDRESS check address prefix todo could be better?
-    if o.script_type == OutputScriptType.PAYTOADDRESS and o.address:
-        raw = base58.decode_check(o.address)
-        coin_type, address = address_type.split(coin, raw)
-        if int.from_bytes(coin_type, 'little') == coin.address_type_p2sh:
-            o.script_type = OutputScriptType.PAYTOSCRIPTHASH
+    if o.address:
+        if o.address.startswith(coin.bech32_prefix):  # bech32
+            return output_derive_script_bech(o, coin, root)
+
+        # if PAYTOADDRESS check address prefix todo could be better?
+        elif o.script_type == OutputScriptType.PAYTOADDRESS:
+            raw = base58.decode_check(o.address)
+            coin_type, address = address_type.split(coin, raw)
+            if int.from_bytes(coin_type, 'little') == coin.address_type_p2sh:
+                o.script_type = OutputScriptType.PAYTOSCRIPTHASH
 
     if o.script_type == OutputScriptType.PAYTOADDRESS:
         ra = output_paytoaddress_extract_raw_address(o, coin, root)
@@ -376,6 +389,9 @@ def input_derive_script(i: TxInputType, pubkey: bytes, signature: bytes=None) ->
     if i.script_type == InputScriptType.SPENDP2SHWITNESS:  # p2wpkh using p2sh
         return script_p2wpkh_in_p2sh(ecdsa_hash_pubkey(pubkey))
 
+    elif i.script_type == InputScriptType.SPENDWITNESS:  # native p2wpkh
+        return input_script_native_p2wpkh()
+
     else:
         raise SigningError(FailureType.SyntaxError,
                            'Unknown input script type')
@@ -421,6 +437,14 @@ def get_p2wpkh_in_p2sh_address(pubkey: bytes, coin: CoinType) -> str:
     return base58.encode_check(bytes(s))
 
 
+def decode_segwit_address(prefix, address) -> bytearray:
+    witness_version, raw = bech32.decode(prefix, address)
+    if witness_version != 0:  # todo constant?
+        raise SigningError(FailureType.SyntaxError,
+                           'Invalid address witness program')
+    return bytearray(raw)
+
+
 # TX Scripts
 # ===
 
@@ -445,6 +469,22 @@ def script_paytoscripthash_new(scripthash: bytes) -> bytearray:
     return s
 
 
+# P2WPKH is the segwit native address which is not backwards compatible
+# output script consists of 00 14 <20-byte-key-hash>
+def output_script_native_p2wpkh(pubkeyhash: bytes) -> bytearray:
+    w = bytearray_with_cap(3 + len(pubkeyhash))
+    w.append(0x00)  # witness version byte
+    w.append(0x14)  # P2WPKH witness program (pub key hash length)
+    write_bytes(w, pubkeyhash)  # pub key hash
+    return w
+
+
+# P2WPKH is the segwit native address which is not backwards compatible
+# input script is completely replaced by the witness and therefore empty
+def input_script_native_p2wpkh() -> bytearray:
+    return bytearray(0)
+
+
 # P2WPKH is nested in P2SH to be backwards compatible
 # see https://github.com/bitcoin/bips/blob/master/bip-0141.mediawiki#witness-program
 # this pushes 16 00 14 <pubkeyhash>
@@ -452,8 +492,8 @@ def script_p2wpkh_in_p2sh(pubkeyhash: bytes) -> bytearray:
     w = bytearray_with_cap(3 + len(pubkeyhash))
     write_op_push(w, len(pubkeyhash) + 2)  # 0x16 - length of the redeemScript
     w.append(0x00)  # witness version byte
-    w.append(0x14)  # P2WPKH witness program (pub key hash length + pub key hash)
-    write_bytes(w, pubkeyhash)
+    w.append(0x14)  # P2WPKH witness program (pub key hash length)
+    write_bytes(w, pubkeyhash)  # pub key hash
     return w
 
 
