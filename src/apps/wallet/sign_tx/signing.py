@@ -338,10 +338,13 @@ def output_derive_script(o: TxOutputType, coin: CoinType, root) -> bytes:
 
     elif o.script_type == OutputScriptType.PAYTOP2SHWITNESS:  # todo ok? check if change?
         node = node_derive(root, o.address_n)
-        address = get_p2wpkh_in_p2sh_address(node.public_key(), coin)
-        ra = base58.decode_check(address)
-        ra = address_type.strip(coin.address_type_p2sh, ra)
-        return output_script_p2sh(ra)
+        raw_address = get_p2wpkh_in_p2sh_raw_address(node.public_key())
+        return output_script_p2sh(raw_address)
+
+    elif o.script_type == OutputScriptType.PAYTOWITNESS:  # todo check if change?
+        node = node_derive(root, o.address_n)
+        pubkey_hash = ecdsa_hash_pubkey(node.public_key())
+        return output_script_native_p2wpkh(pubkey_hash)
 
     elif o.script_type == OutputScriptType.PAYTOOPRETURN:
         if o.amount == 0:
@@ -420,7 +423,16 @@ def ecdsa_sign(node, digest: bytes) -> bytes:
     return sigder
 
 
+# todo currently unused
 def get_p2wpkh_in_p2sh_address(pubkey: bytes, coin: CoinType) -> str:
+    s = bytearray(21)
+    s[0] = coin.address_type_p2sh
+    s[1:21] = get_p2wpkh_in_p2sh_raw_address(pubkey)
+
+    return base58.encode_check(bytes(s))
+
+
+def get_p2wpkh_in_p2sh_raw_address(pubkey: bytes) -> bytes:
     pubkeyhash = ecdsa_hash_pubkey(pubkey)
     s = bytearray(22)
     s[0] = 0x00  # OP_0
@@ -429,11 +441,7 @@ def get_p2wpkh_in_p2sh_address(pubkey: bytes, coin: CoinType) -> str:
     h = sha256(s).digest()
     h = ripemd160(h).digest()
 
-    s = bytearray(21)  # todo better?
-    s[0] = coin.address_type_p2sh
-    s[1:21] = h
-
-    return base58.encode_check(bytes(s))
+    return h
 
 
 def decode_segwit_address(prefix, address) -> bytearray:

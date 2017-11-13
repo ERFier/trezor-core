@@ -9,7 +9,6 @@ class TestSegwitAddress(unittest.TestCase):
     # pylint: disable=C0301
 
     def test_p2wpkh_in_p2sh_address(self):
-
         coin = coins.by_name('Testnet')
 
         address = get_p2wpkh_in_p2sh_address(
@@ -18,8 +17,13 @@ class TestSegwitAddress(unittest.TestCase):
         )
         self.assertEqual(address, '2Mww8dCYPUpKHofjgcXcBCEGmniw9CoaiD2')
 
-    def test_p2wpkh_in_p2sh_node_derive_address(self):
+    def test_p2wpkh_in_p2sh_raw_address(self):
+        raw = get_p2wpkh_in_p2sh_raw_address(
+            unhexlify('03a1af804ac108a8a51782198c2d034b28bf90c8803f5a53f76276fa69a4eae77f')
+        )
+        self.assertEqual(raw, unhexlify('336caa13e08b96080a32b5d818d59b4ab3b36742'))
 
+    def test_p2wpkh_in_p2sh_node_derive_address(self):
         coin = coins.by_name('Testnet')
         seed = bip39.seed(' '.join(['all'] * 12), '')
         root = bip32.from_seed(seed, 'secp256k1')
