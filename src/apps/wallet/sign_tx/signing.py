@@ -151,7 +151,9 @@ async def sign_tx(tx: SignTx, root):
                     txi_sign = txi
                     key_sign = node_derive(root, txi.address_n)
                     key_sign_pub = key_sign.public_key()
-                    txi.script_sig = input_derive_script(txi, key_sign_pub)
+                    # the signature has to be also over the output script to prevent modification
+                    # todo this should fail for p2sh
+                    txi_sign.script_sig = output_script_p2pkh(ecdsa_hash_pubkey(key_sign_pub))
                 else:
                     txi.script_sig = bytes()
                 write_tx_input(h_sign, txi)
@@ -381,10 +383,7 @@ def output_is_change(o: TxOutputType) -> bool:
 
 def input_derive_script(i: TxInputType, pubkey: bytes, signature: bytes=None) -> bytes:
     if i.script_type == InputScriptType.SPENDADDRESS:
-        if signature is None:
-            return output_script_p2pkh(ecdsa_hash_pubkey(pubkey))
-        else:
-            return input_script_p2pkh(pubkey, signature)
+        return input_script_p2pkh(pubkey, signature)  # p2pkh or p2sh
 
     if i.script_type == InputScriptType.SPENDP2SHWITNESS:  # p2wpkh using p2sh
         return input_script_p2wpkh_in_p2sh(ecdsa_hash_pubkey(pubkey))

@@ -4,6 +4,10 @@ from apps.wallet.sign_tx.writers import *
 # TX Scripts
 # ===
 
+# =============== P2PK ===============
+# obsolete
+
+
 # =============== P2PKH ===============
 
 def input_script_p2pkh(pubkey: bytes, signature: bytes) -> bytearray:
@@ -61,9 +65,10 @@ def output_script_native_p2wpkh(pubkeyhash: bytes) -> bytearray:
 # see https://github.com/bitcoin/bips/blob/master/bip-0141.mediawiki#witness-program
 
 # input script (scriptSig) is 16 00 14 <pubkeyhash>
+# signature is moved to the witness
 def input_script_p2wpkh_in_p2sh(pubkeyhash: bytes) -> bytearray:
     w = bytearray_with_cap(3 + len(pubkeyhash))
-    write_op_push(w, len(pubkeyhash) + 2)  # 0x16 - length of the redeemScript
+    w.append(0x16)  # 0x16 - length of the redeemScript
     w.append(0x00)  # witness version byte
     w.append(0x14)  # P2WPKH witness program (pub key hash length)
     write_bytes(w, pubkeyhash)  # pub key hash
