@@ -10,8 +10,8 @@ from trezor.messages import OutputScriptType
 from apps.common import address_type
 from apps.common import coins
 from apps.wallet.sign_tx.segwit_bip143 import *
-from apps.wallet.sign_tx.writers import *
 from apps.wallet.sign_tx.helpers import *
+from apps.wallet.sign_tx.scripts import *
 
 
 class SigningError(ValueError):
@@ -327,23 +327,23 @@ def output_derive_script(o: TxOutputType, coin: CoinType, root) -> bytes:
     if o.script_type == OutputScriptType.PAYTOADDRESS:
         ra = output_paytoaddress_extract_raw_address(o, coin, root)
         ra = address_type.strip(coin.address_type, ra)
-        return script_paytoaddress_new(ra)
+        return output_script_p2pkh(ra)
 
     elif o.script_type == OutputScriptType.PAYTOSCRIPTHASH:
         ra = output_paytoaddress_extract_raw_address(o, coin, root, p2sh=True)
         ra = address_type.strip(coin.address_type_p2sh, ra)
-        return script_paytoscripthash_new(ra)
+        return output_script_p2sh(ra)
 
     elif o.script_type == OutputScriptType.PAYTOP2SHWITNESS:  # todo ok? check if change?
         node = node_derive(root, o.address_n)
         address = get_p2wpkh_in_p2sh_address(node.public_key(), coin)
         ra = base58.decode_check(address)
         ra = address_type.strip(coin.address_type_p2sh, ra)
-        return script_paytoscripthash_new(ra)
+        return output_script_p2sh(ra)
 
     elif o.script_type == OutputScriptType.PAYTOOPRETURN:
         if o.amount == 0:
-            return script_paytoopreturn_new(o.op_return_data)
+            return output_script_paytoopreturn(o.op_return_data)
         else:
             raise SigningError(FailureType.SyntaxError,
                                'OP_RETURN output with non-zero amount')
@@ -382,12 +382,12 @@ def output_is_change(o: TxOutputType) -> bool:
 def input_derive_script(i: TxInputType, pubkey: bytes, signature: bytes=None) -> bytes:
     if i.script_type == InputScriptType.SPENDADDRESS:
         if signature is None:
-            return script_paytoaddress_new(ecdsa_hash_pubkey(pubkey))
+            return output_script_p2pkh(ecdsa_hash_pubkey(pubkey))
         else:
-            return script_spendaddress_new(pubkey, signature)
+            return input_script_p2pkh(pubkey, signature)
 
     if i.script_type == InputScriptType.SPENDP2SHWITNESS:  # p2wpkh using p2sh
-        return script_p2wpkh_in_p2sh(ecdsa_hash_pubkey(pubkey))
+        return input_script_p2wpkh_in_p2sh(ecdsa_hash_pubkey(pubkey))
 
     elif i.script_type == InputScriptType.SPENDWITNESS:  # native p2wpkh
         return input_script_native_p2wpkh()
@@ -443,78 +443,3 @@ def decode_segwit_address(prefix, address) -> bytearray:
         raise SigningError(FailureType.SyntaxError,
                            'Invalid address witness program')
     return bytearray(raw)
-
-
-# TX Scripts
-# ===
-
-
-def script_paytoaddress_new(pubkeyhash: bytes) -> bytearray:
-    s = bytearray(25)
-    s[0] = 0x76  # OP_DUP
-    s[1] = 0xA9  # OP_HASH_160
-    s[2] = 0x14  # pushing 20 bytes
-    s[3:23] = pubkeyhash
-    s[23] = 0x88  # OP_EQUALVERIFY
-    s[24] = 0xAC  # OP_CHECKSIG
-    return s
-
-
-def script_paytoscripthash_new(scripthash: bytes) -> bytearray:
-    s = bytearray(23)
-    s[0] = 0xA9  # OP_HASH_160
-    s[1] = 0x14  # pushing 20 bytes
-    s[2:22] = scripthash
-    s[22] = 0x87  # OP_EQUAL
-    return s
-
-
-# P2WPKH is the segwit native address which is not backwards compatible
-# output script consists of 00 14 <20-byte-key-hash>
-def output_script_native_p2wpkh(pubkeyhash: bytes) -> bytearray:
-    w = bytearray_with_cap(3 + len(pubkeyhash))
-    w.append(0x00)  # witness version byte
-    w.append(0x14)  # P2WPKH witness program (pub key hash length)
-    write_bytes(w, pubkeyhash)  # pub key hash
-    return w
-
-
-# P2WPKH is the segwit native address which is not backwards compatible
-# input script is completely replaced by the witness and therefore empty
-def input_script_native_p2wpkh() -> bytearray:
-    return bytearray(0)
-
-
-# P2WPKH is nested in P2SH to be backwards compatible
-# see https://github.com/bitcoin/bips/blob/master/bip-0141.mediawiki#witness-program
-# this pushes 16 00 14 <pubkeyhash>
-def script_p2wpkh_in_p2sh(pubkeyhash: bytes) -> bytearray:
-    w = bytearray_with_cap(3 + len(pubkeyhash))
-    write_op_push(w, len(pubkeyhash) + 2)  # 0x16 - length of the redeemScript
-    w.append(0x00)  # witness version byte
-    w.append(0x14)  # P2WPKH witness program (pub key hash length)
-    write_bytes(w, pubkeyhash)  # pub key hash
-    return w
-
-
-def script_paytoopreturn_new(data: bytes) -> bytearray:
-    w = bytearray_with_cap(1 + 5 + len(data))
-    w.append(0x6A)  # OP_RETURN
-    write_op_push(w, len(data))
-    w.extend(data)
-    return w
-
-
-def script_spendaddress_new(pubkey: bytes, signature: bytes) -> bytearray:
-    w = bytearray_with_cap(5 + len(signature) + 1 + 5 + len(pubkey))
-    append_signature_and_pubkey(w, pubkey, signature)
-    return w
-
-
-def append_signature_and_pubkey(w: bytearray, pubkey: bytes, signature: bytes) -> bytearray:
-    write_op_push(w, len(signature) + 1)
-    write_bytes(w, signature)
-    w.append(0x01)  # SIGHASH_ALL
-    write_op_push(w, len(pubkey))
-    write_bytes(w, pubkey)
-    return w
