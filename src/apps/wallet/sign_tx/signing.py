@@ -276,12 +276,13 @@ async def get_prevtx_output_value(tx_req: TxRequest, prev_hash: bytes, prev_inde
     return total_out
 
 
-def estimate_tx_size(inputs, outputs):
+def estimate_tx_size(inputs: int, outputs: int) -> int:
     return 10 + inputs * 149 + outputs * 35
 
 
 # TX Helpers
 # ===
+
 
 def get_tx_header(tx: SignTx, segwit=False):
     w_txi = bytearray()
@@ -300,80 +301,109 @@ def get_p2wpkh_witness(signature: bytes, pubkey: bytes):
     return w
 
 
+def get_address(script_type: InputScriptType, coin: CoinType, node) -> bytes:
+
+    if script_type == InputScriptType.SPENDADDRESS:  # p2pkh
+        return node.address(coin.address_type)
+
+    elif script_type == InputScriptType.SPENDWITNESS:  # native p2wpkh
+        if not coin.segwit or not coin.bech32_prefix:
+            raise SigningError(FailureType.ProcessError,
+                               'Coin does not support segwit')
+        return address_p2wpkh(node.public_key(), coin.bech32_prefix)
+
+    elif script_type == InputScriptType.SPENDP2SHWITNESS:  # p2wpkh using p2sh
+        if not coin.segwit or not coin.address_type_p2sh:
+            raise SigningError(FailureType.ProcessError,
+                               'Coin does not support segwit')
+        return address_p2wpkh_in_p2sh(node.public_key(), coin.address_type_p2sh)
+
+    else:
+        raise SigningError(FailureType.ProcessError, 'Invalid script type')
+
+
+def address_p2wpkh_in_p2sh(pubkey: bytes, addrtype: int) -> str:
+    s = bytearray(21)
+    s[0] = addrtype
+    s[1:21] = address_p2wpkh_in_p2sh_raw(pubkey)
+    return base58.encode_check(bytes(s))
+
+
+def address_p2wpkh_in_p2sh_raw(pubkey: bytes) -> bytes:
+    s = bytearray(22)
+    s[0] = 0x00  # OP_0
+    s[1] = 0x14  # pushing 20 bytes
+    s[2:22] = ecdsa_hash_pubkey(pubkey)
+    h = sha256(s).digest()
+    h = ripemd160(h).digest()
+    return h
+
+
+def address_p2wpkh(pubkey: bytes, hrp: str) -> str:
+    pubkeyhash = ecdsa_hash_pubkey(pubkey)
+    address = bech32.encode(hrp, 0, pubkeyhash)  # TODO: constant?
+    if address is None:
+        raise SigningError(FailureType.ProcessError,
+                           'Invalid address')
+    return address
+
+
+def decode_address_p2wpkh(prefix: str, address: str) -> bytes:
+    witver, raw = bech32.decode(prefix, address)
+    if witver != 0:  # TODO: constant?
+        raise SigningError(FailureType.ProcessError,
+                           'Invalid address witness program')
+    return bytes(raw)
+
+
 # TX Outputs
 # ===
-
-def output_derive_script_bech(o: TxOutputType, coin: CoinType, root) -> bytes:
-
-    if o.script_type == OutputScriptType.PAYTOADDRESS:
-        raw = decode_segwit_address(coin.bech32_prefix, o.address)
-        return output_script_native_p2wpkh(raw)
-    else:
-        raise SigningError(FailureType.SyntaxError,
-                           'Invalid output script type')
 
 
 def output_derive_script(o: TxOutputType, coin: CoinType, root) -> bytes:
 
-    if o.address:
-        if o.address.startswith(coin.bech32_prefix):  # bech32
-            return output_derive_script_bech(o, coin, root)
-
-        # if PAYTOADDRESS check address prefix todo could be better?
-        elif o.script_type == OutputScriptType.PAYTOADDRESS:
-            raw = base58.decode_check(o.address)
-            coin_type, address = address_type.split(coin, raw)
-            if int.from_bytes(coin_type, 'little') == coin.address_type_p2sh:
-                o.script_type = OutputScriptType.PAYTOSCRIPTHASH
-
-    if o.script_type == OutputScriptType.PAYTOADDRESS:
-        ra = output_paytoaddress_extract_raw_address(o, coin, root)
-        ra = address_type.strip(coin.address_type, ra)
-        return output_script_p2pkh(ra)
-
-    elif o.script_type == OutputScriptType.PAYTOSCRIPTHASH:
-        ra = output_paytoaddress_extract_raw_address(o, coin, root, p2sh=True)
-        ra = address_type.strip(coin.address_type_p2sh, ra)
-        return output_script_p2sh(ra)
-
-    elif o.script_type == OutputScriptType.PAYTOP2SHWITNESS:  # todo ok? check if change?
-        node = node_derive(root, o.address_n)
-        raw_address = get_p2wpkh_in_p2sh_raw_address(node.public_key())
-        return output_script_p2sh(raw_address)
-
-    elif o.script_type == OutputScriptType.PAYTOWITNESS:  # todo check if change?
-        node = node_derive(root, o.address_n)
-        pubkey_hash = ecdsa_hash_pubkey(node.public_key())
-        return output_script_native_p2wpkh(pubkey_hash)
-
-    elif o.script_type == OutputScriptType.PAYTOOPRETURN:
-        if o.amount == 0:
-            return output_script_paytoopreturn(o.op_return_data)
-        else:
-            raise SigningError(FailureType.SyntaxError,
+    if o.script_type == OutputScriptType.PAYTOOPRETURN:
+        if o.amount != 0:
+            raise SigningError(FailureType.ProcessError,
                                'OP_RETURN output with non-zero amount')
+        return output_script_paytoopreturn(o.op_return_data)
 
+    if o.address_n:  # change output
+        if o.address:
+            raise SigningError(FailureType.ProcessError,
+                               'Both address_n and address provided')
+        if o.script_type == OutputScriptType.PAYTOADDRESS:
+            input_script_type = InputScriptType.SPENDADDRESS
+        elif o.script_type == OutputScriptType.PAYTOMULTISIG:
+            input_script_type = InputScriptType.SPENDMULTISIG
+        elif o.script_type == OutputScriptType.PAYTOWITNESS:
+            input_script_type = InputScriptType.SPENDWITNESS
+        elif o.script_type == OutputScriptType.PAYTOP2SHWITNESS:
+            input_script_type = InputScriptType.SPENDP2SHWITNESS
+        else:
+            raise SigningError(FailureType.ProcessError, 'Invalid script type')
+        address = get_address(input_script_type, coin,
+                              node_derive(root, o.address_n))
     else:
-        raise SigningError(FailureType.SyntaxError,
-                           'Invalid output script type')
+        if not o.address:
+            raise SigningError(FailureType.ProcessError, 'Missing address')
+        address = o.address
 
+    if coin.bech32_prefix and address.startswith(coin.bech32_prefix):  # p2wpkh
+        pubkeyhash = decode_address_p2wpkh(coin.bech32_prefix, address)
+        return output_script_native_p2wpkh(pubkeyhash)
 
-def output_paytoaddress_extract_raw_address(
-        o: TxOutputType, coin: CoinType, root, p2sh: bool=False) -> bytes:
-    addr_type = coin.address_type_p2sh if p2sh else coin.address_type
-    # TODO: dont encode/decode more then necessary
-    if o.address_n is not None:
-        node = node_derive(root, o.address_n)
-        address = node.address(addr_type)
-        return base58.decode_check(address)
-    if o.address:
-        raw = base58.decode_check(o.address)
-        if not address_type.check(addr_type, raw):
-            raise SigningError(FailureType.SyntaxError,
-                               'Invalid address type')
-        return raw
-    raise SigningError(FailureType.SyntaxError,
-                       'Missing address')
+    raw_address = base58.decode_check(address)
+
+    if address_type.check(coin.address_type, raw_address):  # p2pkh
+        pubkeyhash = address_type.strip(coin.address_type, raw_address)
+        return output_script_p2pkh(pubkeyhash)
+
+    elif address_type.check(coin.address_type_p2sh, raw_address):  # p2sh
+        scripthash = address_type.strip(coin.address_type_p2sh, raw_address)
+        return output_script_p2sh(scripthash)
+
+    raise SigningError(FailureType.ProcessError, 'Invalid address type')
 
 
 def output_is_change(o: TxOutputType) -> bool:
@@ -395,8 +425,7 @@ def input_derive_script(i: TxInputType, pubkey: bytes, signature: bytes=None) ->
         return input_script_native_p2wpkh()
 
     else:
-        raise SigningError(FailureType.SyntaxError,
-                           'Unknown input script type')
+        raise SigningError(FailureType.ProcessError, 'Invalid script type')
 
 
 def node_derive(root, address_n: list):
@@ -421,32 +450,3 @@ def ecdsa_sign(node, digest: bytes) -> bytes:
     sig = secp256k1.sign(node.private_key(), digest)
     sigder = der.encode_seq((sig[1:33], sig[33:65]))
     return sigder
-
-
-# todo currently unused
-def get_p2wpkh_in_p2sh_address(pubkey: bytes, coin: CoinType) -> str:
-    s = bytearray(21)
-    s[0] = coin.address_type_p2sh
-    s[1:21] = get_p2wpkh_in_p2sh_raw_address(pubkey)
-
-    return base58.encode_check(bytes(s))
-
-
-def get_p2wpkh_in_p2sh_raw_address(pubkey: bytes) -> bytes:
-    pubkeyhash = ecdsa_hash_pubkey(pubkey)
-    s = bytearray(22)
-    s[0] = 0x00  # OP_0
-    s[1] = 0x14  # pushing 20 bytes
-    s[2:22] = pubkeyhash
-    h = sha256(s).digest()
-    h = ripemd160(h).digest()
-
-    return h
-
-
-def decode_segwit_address(prefix, address) -> bytearray:
-    witness_version, raw = bech32.decode(prefix, address)
-    if witness_version != 0:  # todo constant?
-        raise SigningError(FailureType.SyntaxError,
-                           'Invalid address witness program')
-    return bytearray(raw)
