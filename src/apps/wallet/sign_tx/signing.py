@@ -129,6 +129,7 @@ async def sign_tx(tx: SignTx, root):
         if segwit[i_sign]:
             # STAGE_REQUEST_SEGWIT_INPUT
             txi_sign = await request_tx_input(tx_req, i_sign)
+            write_tx_input_check(h_second, txi_sign)
             if txi_sign.script_type in (InputScriptType.SPENDP2SHWITNESS, InputScriptType.SPENDWITNESS):
                 key_sign = node_derive(root, txi_sign.address_n)
                 key_sign_pub = key_sign.public_key()
@@ -199,6 +200,7 @@ async def sign_tx(tx: SignTx, root):
         txo = await request_tx_output(tx_req, o)
         txo_bin.amount = txo.amount
         txo_bin.script_pubkey = output_derive_script(txo, coin, root)
+        write_tx_output(h_second, txo_bin)  # for segwit (not yet checked)
 
         # serialize output
         w_txo_bin = bytearray_with_cap(
@@ -218,8 +220,8 @@ async def sign_tx(tx: SignTx, root):
             # STAGE_REQUEST_SEGWIT_WITNESS
             txi = await request_tx_input(tx_req, i)
 
-            # Check amount
-            if txi.amount > authorized_in:
+            # Check amount and the control digests
+            if txi.amount > authorized_in or (get_tx_hash(h_first, False) != get_tx_hash(h_second, False)):
                 raise SigningError(FailureType.ProcessError,
                                    'Transaction has changed during signing')
             authorized_in -= txi.amount
