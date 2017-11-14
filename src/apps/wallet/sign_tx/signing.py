@@ -350,7 +350,7 @@ def address_p2wpkh(pubkey: bytes, hrp: str) -> str:
     return address
 
 
-def decode_address_p2wpkh(prefix: str, address: str) -> bytes:
+def decode_bech32_address(prefix: str, address: str) -> bytes:
     witver, raw = bech32.decode(prefix, address)
     if witver != 0:  # TODO: constant?
         raise SigningError(FailureType.ProcessError,
@@ -374,26 +374,16 @@ def output_derive_script(o: TxOutputType, coin: CoinType, root) -> bytes:
         if o.address:
             raise SigningError(FailureType.ProcessError,
                                'Both address_n and address provided')
-        if o.script_type == OutputScriptType.PAYTOADDRESS:
-            input_script_type = InputScriptType.SPENDADDRESS
-        elif o.script_type == OutputScriptType.PAYTOMULTISIG:
-            input_script_type = InputScriptType.SPENDMULTISIG
-        elif o.script_type == OutputScriptType.PAYTOWITNESS:
-            input_script_type = InputScriptType.SPENDWITNESS
-        elif o.script_type == OutputScriptType.PAYTOP2SHWITNESS:
-            input_script_type = InputScriptType.SPENDP2SHWITNESS
-        else:
-            raise SigningError(FailureType.ProcessError, 'Invalid script type')
-        address = get_address(input_script_type, coin,
-                              node_derive(root, o.address_n))
+        address = get_address_for_change(o, coin, root)
     else:
         if not o.address:
             raise SigningError(FailureType.ProcessError, 'Missing address')
         address = o.address
 
-    if coin.bech32_prefix and address.startswith(coin.bech32_prefix):  # p2wpkh
-        pubkeyhash = decode_address_p2wpkh(coin.bech32_prefix, address)
-        return output_script_native_p2wpkh(pubkeyhash)
+    if coin.bech32_prefix and address.startswith(coin.bech32_prefix):  # p2wpkh or p2wsh
+        # todo check if p2wsh works
+        pubkeyhash = decode_bech32_address(coin.bech32_prefix, address)
+        return output_script_native_p2wpkh_or_p2wsh(pubkeyhash)
 
     raw_address = base58.decode_check(address)
 
@@ -408,6 +398,21 @@ def output_derive_script(o: TxOutputType, coin: CoinType, root) -> bytes:
     raise SigningError(FailureType.ProcessError, 'Invalid address type')
 
 
+def get_address_for_change(o: TxOutputType, coin: CoinType, root):
+
+    if o.script_type == OutputScriptType.PAYTOADDRESS:
+        input_script_type = InputScriptType.SPENDADDRESS
+    elif o.script_type == OutputScriptType.PAYTOMULTISIG:
+        input_script_type = InputScriptType.SPENDMULTISIG
+    elif o.script_type == OutputScriptType.PAYTOWITNESS:
+        input_script_type = InputScriptType.SPENDWITNESS
+    elif o.script_type == OutputScriptType.PAYTOP2SHWITNESS:
+        input_script_type = InputScriptType.SPENDP2SHWITNESS
+    else:
+        raise SigningError(FailureType.ProcessError, 'Invalid script type')
+    return get_address(input_script_type, coin, node_derive(root, o.address_n))
+
+
 def output_is_change(o: TxOutputType) -> bool:
     return bool(o.address_n)
 
@@ -418,13 +423,13 @@ def output_is_change(o: TxOutputType) -> bool:
 
 def input_derive_script(i: TxInputType, pubkey: bytes, signature: bytes=None) -> bytes:
     if i.script_type == InputScriptType.SPENDADDRESS:
-        return input_script_p2pkh(pubkey, signature)  # p2pkh or p2sh
+        return input_script_p2pkh_or_p2sh(pubkey, signature)  # p2pkh or p2sh
 
     if i.script_type == InputScriptType.SPENDP2SHWITNESS:  # p2wpkh using p2sh
         return input_script_p2wpkh_in_p2sh(ecdsa_hash_pubkey(pubkey))
 
-    elif i.script_type == InputScriptType.SPENDWITNESS:  # native p2wpkh
-        return input_script_native_p2wpkh()
+    elif i.script_type == InputScriptType.SPENDWITNESS:  # native p2wpkh or p2wsh
+        return input_script_native_p2wpkh_or_p2wsh()
 
     else:
         raise SigningError(FailureType.ProcessError, 'Invalid script type')
