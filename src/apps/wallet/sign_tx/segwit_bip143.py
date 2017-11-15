@@ -1,9 +1,8 @@
 from trezor.crypto.hashlib import sha256
-from common import *
-
-from apps.wallet.sign_tx.writers import *
 from trezor.messages.SignTx import SignTx
 from trezor.messages import InputScriptType, FailureType
+
+from apps.wallet.sign_tx.writers import *
 
 
 class Bip143Error(ValueError):
